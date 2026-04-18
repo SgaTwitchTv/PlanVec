@@ -21,7 +21,23 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="app\pipeline.py" />
+    <Compile Include="app\__init__.py" />
+    <Compile Include="main.py" />
     <Compile Include="PlanVectorizer.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="app\detection\" />
+    <Folder Include="app\geometry\" />
+    <Folder Include="app\export\" />
+    <Folder Include="app\preprocessing\" />
+    <Folder Include="input\" />
+    <Folder Include="app\" />
+    <Folder Include="tests\" />
+    <Folder Include="output\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="requirements.txt" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
