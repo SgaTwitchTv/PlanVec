@@ -18,7 +18,7 @@ class PipelineSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             input_path = temp_path / "source.png"
-            output_path = temp_path / "result.svg"
+            output_path = temp_path / "nested" / "result.svg"
 
             image = Image.new("RGB", (128, 128), "white")
             draw = ImageDraw.Draw(image)
@@ -29,7 +29,19 @@ class PipelineSmokeTest(unittest.TestCase):
             run_pipeline(str(input_path), str(output_path))
 
             self.assertTrue(output_path.exists())
-            self.assertIn("<line", output_path.read_text(encoding="utf-8"))
+            svg_text = output_path.read_text(encoding="utf-8")
+            self.assertIn("<line", svg_text)
+            self.assertIn('stroke="black"', svg_text)
+            self.assertIn('fill="none"', svg_text)
+
+    def test_pipeline_raises_for_missing_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "missing.png"
+            output_path = temp_path / "result.svg"
+
+            with self.assertRaises(FileNotFoundError):
+                run_pipeline(str(input_path), str(output_path))
 
 
 if __name__ == "__main__":

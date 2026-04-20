@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import hypot
+from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -26,3 +27,9 @@ class LineSegment:
     def length(self) -> float:
         """Return the Euclidean length of the segment."""
         return hypot(self.x2 - self.x1, self.y2 - self.y1)
+
+    def canonical_key(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """Return an order-independent key for exact duplicate removal."""
+        start = (self.x1, self.y1)
+        end = (self.x2, self.y2)
+        return (start, end) if start <= end else (end, start)

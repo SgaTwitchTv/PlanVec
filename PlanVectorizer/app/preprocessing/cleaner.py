@@ -12,5 +12,5 @@ def to_grayscale(image: np.ndarray) -> np.ndarray:
 
 
 def denoise_image(grayscale_image: np.ndarray) -> np.ndarray:
-    """Apply a light blur to reduce noise before edge detection."""
-    return cv2.GaussianBlur(grayscale_image, (5, 5), 0)
+    """Apply light denoising before edge detection."""
+    return cv2.GaussianBlur(grayscale_image, (3, 3), 0)

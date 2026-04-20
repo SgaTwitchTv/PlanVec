@@ -26,6 +26,7 @@ def write_svg(
         size=(normalized_width, normalized_height),
         viewBox=f"0 0 {normalized_width} {normalized_height}",
     )
+    drawing.attribs["fill"] = "none"
 
     for segment in line_segments:
         drawing.add(
@@ -35,6 +36,7 @@ def write_svg(
                 stroke="black",
                 stroke_width=1,
                 stroke_linecap="square",
+                fill="none",
             )
         )
 
