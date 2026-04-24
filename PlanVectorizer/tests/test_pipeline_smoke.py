@@ -6,9 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw
 
+from app.geometry.merging import merge_collinear_segments
+from app.geometry.models import LineSegment
 from app.pipeline import run_pipeline
+from app.preprocessing.cleaner import extract_structural_mask
 
 
 class PipelineSmokeTest(unittest.TestCase):
@@ -42,6 +46,36 @@ class PipelineSmokeTest(unittest.TestCase):
 
             with self.assertRaises(FileNotFoundError):
                 run_pipeline(str(input_path), str(output_path))
+
+    def test_structural_mask_rejects_colored_overlays(self) -> None:
+        image = np.full((32, 32, 3), 255, dtype=np.uint8)
+        image[:, 8] = (0, 0, 0)
+        image[16, :] = (255, 255, 0)
+        image[:, 24] = (0, 0, 255)
+
+        structural_mask = extract_structural_mask(image)
+
+        self.assertEqual(int(structural_mask[10, 8]), 255)
+        self.assertEqual(int(structural_mask[16, 2]), 0)
+        self.assertEqual(int(structural_mask[10, 24]), 0)
+
+    def test_merge_collinear_segments_combines_broken_horizontal_runs(self) -> None:
+        segments = [
+            LineSegment(10, 20, 30, 21),
+            LineSegment(34, 19, 60, 20),
+            LineSegment(10, 60, 10, 90),
+        ]
+
+        merged_segments = merge_collinear_segments(
+            segments,
+            axis_tolerance=3,
+            gap_tolerance=5,
+            orthogonal_deviation=3,
+        )
+
+        self.assertIn(LineSegment(10, 20, 60, 20), merged_segments)
+        self.assertIn(LineSegment(10, 60, 10, 90), merged_segments)
+        self.assertEqual(len(merged_segments), 2)
 
 
 if __name__ == "__main__":

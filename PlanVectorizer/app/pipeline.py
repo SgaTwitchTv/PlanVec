@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from app.detection.lines import detect_edges, detect_line_segments
 from app.export.svg_writer import write_svg
 from app.geometry.filtering import deduplicate_segments, filter_short_segments
-from app.preprocessing.cleaner import denoise_image, to_grayscale
+from app.geometry.merging import merge_collinear_segments
+from app.preprocessing.cleaner import (
+    apply_structural_mask,
+    denoise_image,
+    extract_structural_mask,
+    to_grayscale,
+)
 from app.preprocessing.loader import load_image
 
 
@@ -16,6 +22,11 @@ class PipelineSettings:
     """Tunable settings for the current deterministic pipeline step."""
 
     min_line_length: float = 20.0
+    dark_threshold: int = 160
+    neutral_threshold: int = 40
+    merge_axis_tolerance: int = 4
+    merge_gap_tolerance: int = 12
+    orthogonal_deviation: int = 4
 
 
 def run_pipeline(input_path: str, output_path: str) -> None:
@@ -28,7 +39,13 @@ def run_pipeline(input_path: str, output_path: str) -> None:
 
     image = load_image(input_path)
     grayscale = to_grayscale(image)
-    denoised = denoise_image(grayscale)
+    structural_mask = extract_structural_mask(
+        image,
+        dark_threshold=settings.dark_threshold,
+        neutral_threshold=settings.neutral_threshold,
+    )
+    masked_grayscale = apply_structural_mask(grayscale, structural_mask)
+    denoised = denoise_image(masked_grayscale)
     edges = detect_edges(denoised)
     segments = detect_line_segments(edges)
     filtered_segments = filter_short_segments(
@@ -36,15 +53,22 @@ def run_pipeline(input_path: str, output_path: str) -> None:
         min_length=settings.min_line_length,
     )
     unique_segments = deduplicate_segments(filtered_segments)
+    merged_segments = merge_collinear_segments(
+        unique_segments,
+        axis_tolerance=settings.merge_axis_tolerance,
+        gap_tolerance=settings.merge_gap_tolerance,
+        orthogonal_deviation=settings.orthogonal_deviation,
+    )
+    final_segments = deduplicate_segments(merged_segments)
 
     write_svg(
         output_path=output_path,
-        line_segments=unique_segments,
+        line_segments=final_segments,
         canvas_width=image.shape[1],
         canvas_height=image.shape[0],
     )
 
     print(f"Detected {len(segments)} line segments")
     print(f"Retained {len(filtered_segments)} filtered line segments")
-    print(f"Exported {len(unique_segments)} unique line segments")
+    print(f"Merged into {len(final_segments)} final line segments")
     print("Pipeline finished")
