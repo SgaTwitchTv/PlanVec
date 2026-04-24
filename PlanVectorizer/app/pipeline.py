@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from app.detection.lines import detect_edges, detect_line_segments
 from app.export.svg_writer import write_svg
 from app.geometry.filtering import deduplicate_segments, filter_short_segments
-from app.geometry.merging import merge_collinear_segments
 from app.preprocessing.cleaner import (
     apply_structural_mask,
     denoise_image,
@@ -24,9 +23,6 @@ class PipelineSettings:
     min_line_length: float = 20.0
     dark_threshold: int = 160
     neutral_threshold: int = 40
-    merge_axis_tolerance: int = 4
-    merge_gap_tolerance: int = 12
-    orthogonal_deviation: int = 4
 
 
 def run_pipeline(input_path: str, output_path: str) -> None:
@@ -52,14 +48,7 @@ def run_pipeline(input_path: str, output_path: str) -> None:
         segments,
         min_length=settings.min_line_length,
     )
-    unique_segments = deduplicate_segments(filtered_segments)
-    merged_segments = merge_collinear_segments(
-        unique_segments,
-        axis_tolerance=settings.merge_axis_tolerance,
-        gap_tolerance=settings.merge_gap_tolerance,
-        orthogonal_deviation=settings.orthogonal_deviation,
-    )
-    final_segments = deduplicate_segments(merged_segments)
+    final_segments = deduplicate_segments(filtered_segments)
 
     write_svg(
         output_path=output_path,
@@ -70,5 +59,5 @@ def run_pipeline(input_path: str, output_path: str) -> None:
 
     print(f"Detected {len(segments)} line segments")
     print(f"Retained {len(filtered_segments)} filtered line segments")
-    print(f"Merged into {len(final_segments)} final line segments")
+    print(f"Exported {len(final_segments)} unique line segments")
     print("Pipeline finished")
