@@ -11,6 +11,7 @@ from app.preprocessing.cleaner import (
     apply_structural_mask,
     denoise_image,
     extract_structural_mask,
+    reinforce_outer_wall_continuity,
     to_grayscale,
 )
 from app.preprocessing.loader import load_image
@@ -23,6 +24,8 @@ class PipelineSettings:
     min_line_length: float = 20.0
     dark_threshold: int = 160
     neutral_threshold: int = 40
+    outer_band_depth: int = 48
+    outer_gap_span: int = 31
 
 
 def run_pipeline(input_path: str, output_path: str) -> None:
@@ -39,6 +42,11 @@ def run_pipeline(input_path: str, output_path: str) -> None:
         image,
         dark_threshold=settings.dark_threshold,
         neutral_threshold=settings.neutral_threshold,
+    )
+    structural_mask = reinforce_outer_wall_continuity(
+        structural_mask,
+        band_depth=settings.outer_band_depth,
+        gap_span=settings.outer_gap_span,
     )
     masked_grayscale = apply_structural_mask(grayscale, structural_mask)
     denoised = denoise_image(masked_grayscale)

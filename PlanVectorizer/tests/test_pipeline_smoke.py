@@ -10,7 +10,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from app.pipeline import run_pipeline
-from app.preprocessing.cleaner import extract_structural_mask
+from app.preprocessing.cleaner import (
+    extract_structural_mask,
+    reinforce_outer_wall_continuity,
+)
 
 
 class PipelineSmokeTest(unittest.TestCase):
@@ -56,6 +59,25 @@ class PipelineSmokeTest(unittest.TestCase):
         self.assertEqual(int(structural_mask[10, 8]), 255)
         self.assertEqual(int(structural_mask[16, 2]), 0)
         self.assertEqual(int(structural_mask[10, 24]), 0)
+
+    def test_outer_wall_continuity_targets_boundary_bands_only(self) -> None:
+        structural_mask = np.zeros((80, 80), dtype=np.uint8)
+        structural_mask[5, 10:26] = 255
+        structural_mask[5, 35:61] = 255
+        structural_mask[70, 10:61] = 255
+        structural_mask[10:71, 10] = 255
+        structural_mask[10:71, 60] = 255
+        structural_mask[40, 20:31] = 255
+        structural_mask[40, 40:51] = 255
+
+        healed_mask = reinforce_outer_wall_continuity(
+            structural_mask,
+            band_depth=12,
+            gap_span=15,
+        )
+
+        self.assertEqual(int(healed_mask[5, 30]), 255)
+        self.assertEqual(int(healed_mask[40, 35]), 0)
 
 
 if __name__ == "__main__":
