@@ -33,3 +33,14 @@ class LineSegment:
         start = (self.x1, self.y1)
         end = (self.x2, self.y2)
         return (start, end) if start <= end else (end, start)
+
+
+@dataclass(frozen=True)
+class Polyline:
+    """A polyline defined by ordered 2D pixel coordinates."""
+
+    points: Tuple[Tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        normalized_points = tuple((int(x), int(y)) for x, y in self.points)
+        object.__setattr__(self, "points", normalized_points)

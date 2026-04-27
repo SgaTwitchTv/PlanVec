@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 
@@ -100,6 +102,33 @@ def denoise_image(grayscale_image: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(grayscale_image, (3, 3), 0)
 
 
+@dataclass(frozen=True)
+class BlackMaskCleanupSettings:
+    """Config for architecture-focused black mask cleanup."""
+
+    min_component_area: int = 18
+    leader_line_min_length: int = 18
+    leader_line_max_thickness: int = 3
+    closing_kernel_size: int = 3
+
+
+def clean_black_mask(
+    black_mask_raw: np.ndarray,
+    rejected_mask: np.ndarray,
+    settings: BlackMaskCleanupSettings,
+) -> np.ndarray:
+    """Remove non-architectural noise while preserving walls and door arcs."""
+    cleaned_mask = black_mask_raw.copy()
+    cleaned_mask[rejected_mask > 0] = 0
+
+    kernel_size = max(3, int(settings.closing_kernel_size))
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel)
+    cleaned_mask = _remove_small_components(cleaned_mask, settings.min_component_area)
+    cleaned_mask = _remove_thin_diagonal_components(cleaned_mask, settings)
+    return cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel)
+
+
 def _find_mask_bounds(structural_mask: np.ndarray) -> tuple[int, int, int, int] | None:
     """Return the bounding box of non-zero pixels in the mask."""
     points = cv2.findNonZero(structural_mask)
@@ -125,3 +154,44 @@ def _close_band_in_place(
     region = structural_mask[y0:y1, x0:x1]
     closed_region = cv2.morphologyEx(region, cv2.MORPH_CLOSE, kernel)
     structural_mask[y0:y1, x0:x1] = np.maximum(region, closed_region)
+
+
+def _remove_small_components(mask: np.ndarray, min_component_area: int) -> np.ndarray:
+    """Remove tiny connected components from a binary mask."""
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    filtered_mask = np.zeros_like(mask)
+
+    for label_index in range(1, component_count):
+        area = int(stats[label_index, cv2.CC_STAT_AREA])
+        if area >= min_component_area:
+            filtered_mask[labels == label_index] = 255
+
+    return filtered_mask
+
+
+def _remove_thin_diagonal_components(
+    mask: np.ndarray,
+    settings: BlackMaskCleanupSettings,
+) -> np.ndarray:
+    """Suppress likely thin diagonal leader lines without touching walls."""
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    filtered_mask = np.zeros_like(mask)
+
+    for label_index in range(1, component_count):
+        x = int(stats[label_index, cv2.CC_STAT_LEFT])
+        y = int(stats[label_index, cv2.CC_STAT_TOP])
+        width = int(stats[label_index, cv2.CC_STAT_WIDTH])
+        height = int(stats[label_index, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label_index, cv2.CC_STAT_AREA])
+
+        long_enough = max(width, height) >= settings.leader_line_min_length
+        thin_enough = min(width, height) <= settings.leader_line_max_thickness
+        diagonalish = width > settings.leader_line_max_thickness and height > settings.leader_line_max_thickness
+        sparse = area <= max(width, height) * max(2, settings.leader_line_max_thickness)
+
+        if long_enough and thin_enough and diagonalish and sparse:
+            continue
+
+        filtered_mask[labels == label_index] = 255
+
+    return filtered_mask

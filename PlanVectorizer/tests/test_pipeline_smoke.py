@@ -9,15 +9,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from app.segmentation.color_masks import ColorMaskSettings, build_segmentation_masks
 from app.pipeline import run_pipeline
-from app.preprocessing.cleaner import (
-    extract_structural_mask,
-    reinforce_outer_wall_continuity,
-)
+from app.preprocessing.cleaner import BlackMaskCleanupSettings, clean_black_mask
 
 
 class PipelineSmokeTest(unittest.TestCase):
-    """Verify that the MVP pipeline creates an SVG from a simple raster input."""
+    """Verify that the architecture-only pipeline produces clean outputs."""
 
     def test_pipeline_creates_svg_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -29,6 +27,7 @@ class PipelineSmokeTest(unittest.TestCase):
             draw = ImageDraw.Draw(image)
             draw.line((16, 16, 112, 16), fill="black", width=3)
             draw.line((16, 16, 16, 112), fill="black", width=3)
+            draw.arc((35, 35, 80, 80), start=0, end=90, fill="black", width=2)
             image.save(input_path)
 
             run_pipeline(str(input_path), str(output_path))
@@ -38,6 +37,10 @@ class PipelineSmokeTest(unittest.TestCase):
             self.assertIn("<line", svg_text)
             self.assertIn('stroke="black"', svg_text)
             self.assertIn('fill="none"', svg_text)
+            self.assertTrue((temp_path / "nested" / "debug" / "black_mask_raw.png").exists())
+            self.assertTrue((temp_path / "nested" / "debug" / "black_mask_clean.png").exists())
+            self.assertTrue((temp_path / "nested" / "debug" / "architecture_edges.png").exists())
+            self.assertTrue((temp_path / "nested" / "debug" / "architecture_preview.png").exists())
 
     def test_pipeline_raises_for_missing_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -48,36 +51,26 @@ class PipelineSmokeTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 run_pipeline(str(input_path), str(output_path))
 
-    def test_structural_mask_rejects_colored_overlays(self) -> None:
-        image = np.full((32, 32, 3), 255, dtype=np.uint8)
+    def test_segmentation_and_cleanup_remove_colored_annotations(self) -> None:
+        image = np.full((48, 48, 3), (200, 180, 150), dtype=np.uint8)
         image[:, 8] = (0, 0, 0)
-        image[16, :] = (255, 255, 0)
-        image[:, 24] = (0, 0, 255)
+        image[20, :] = (255, 255, 0)
+        image[:, 30] = (0, 0, 255)
+        image[10:13, 10:13] = (255, 255, 255)
 
-        structural_mask = extract_structural_mask(image)
-
-        self.assertEqual(int(structural_mask[10, 8]), 255)
-        self.assertEqual(int(structural_mask[16, 2]), 0)
-        self.assertEqual(int(structural_mask[10, 24]), 0)
-
-    def test_outer_wall_continuity_targets_boundary_bands_only(self) -> None:
-        structural_mask = np.zeros((80, 80), dtype=np.uint8)
-        structural_mask[5, 10:26] = 255
-        structural_mask[5, 35:61] = 255
-        structural_mask[70, 10:61] = 255
-        structural_mask[10:71, 10] = 255
-        structural_mask[10:71, 60] = 255
-        structural_mask[40, 20:31] = 255
-        structural_mask[40, 40:51] = 255
-
-        healed_mask = reinforce_outer_wall_continuity(
-            structural_mask,
-            band_depth=12,
-            gap_span=15,
+        segmentation_masks = build_segmentation_masks(image, ColorMaskSettings())
+        black_mask_clean = clean_black_mask(
+            segmentation_masks.black_mask_raw,
+            segmentation_masks.rejected_colored_mask,
+            BlackMaskCleanupSettings(min_component_area=4),
         )
 
-        self.assertEqual(int(healed_mask[5, 30]), 255)
-        self.assertEqual(int(healed_mask[40, 35]), 0)
+        self.assertEqual(int(segmentation_masks.black_mask_raw[8, 8]), 255)
+        self.assertEqual(int(segmentation_masks.cyan_mask[20, 2]), 255)
+        self.assertEqual(int(segmentation_masks.colored_outline_mask[10, 30]), 255)
+        self.assertEqual(int(segmentation_masks.white_callout_mask[11, 11]), 255)
+        self.assertEqual(int(black_mask_clean[20, 2]), 0)
+        self.assertEqual(int(black_mask_clean[10, 30]), 0)
 
 
 if __name__ == "__main__":

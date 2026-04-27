@@ -6,12 +6,13 @@ from pathlib import Path
 
 import svgwrite
 
-from app.geometry.models import LineSegment
+from app.geometry.models import LineSegment, Polyline
 
 
 def write_svg(
     output_path: str,
     line_segments: list[LineSegment],
+    curved_paths: list[Polyline],
     canvas_width: int,
     canvas_height: int,
 ) -> None:
@@ -36,6 +37,21 @@ def write_svg(
                 stroke="black",
                 stroke_width=1,
                 stroke_linecap="square",
+                fill="none",
+            )
+        )
+
+    for polyline in curved_paths:
+        if len(polyline.points) < 2:
+            continue
+
+        drawing.add(
+            drawing.polyline(
+                points=list(polyline.points),
+                stroke="black",
+                stroke_width=1,
+                stroke_linecap="round",
+                stroke_linejoin="round",
                 fill="none",
             )
         )
