@@ -10,8 +10,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app.architecture.annotation_classifier import AnnotationPrediction, normalize_candidate_crop
+from app.architecture.annotation_classifier import (
+    AnnotationPrediction,
+    load_labeled_dataset,
+    normalize_candidate_crop,
+)
 from app.architecture.components import ComponentFilterSettings, filter_structure_components
+from app.architecture.extract import ArchitectureExtractionSettings, extract_architecture_geometry
 from app.pipeline import run_pipeline
 from app.preprocessing.cleaner import BlackMaskCleanupSettings, clean_black_mask
 from app.segmentation.color_masks import ColorMaskSettings, build_segmentation_masks
@@ -26,6 +31,18 @@ class _FakeStructureClassifier:
             label="structure_square_pillar",
             confidence=0.99,
             probabilities={"structure_square_pillar": 0.99},
+        )
+
+
+class _FakeLowConfidenceAnnotationClassifier:
+    """Classifier stub that should not override keep-by-default structure review candidates."""
+
+    def predict_crop(self, crop_mask: np.ndarray) -> AnnotationPrediction:
+        _ = crop_mask
+        return AnnotationPrediction(
+            label="annotation_other",
+            confidence=0.78,
+            probabilities={"annotation_other": 0.78},
         )
 
 
@@ -147,6 +164,61 @@ class PipelineSmokeTest(unittest.TestCase):
         self.assertEqual(int(filter_result.rejected_symbol_mask[28, 24]), 0)
         self.assertEqual(len(filter_result.candidate_crops), 1)
         self.assertEqual(filter_result.candidate_crops[0].predicted_label, "structure_square_pillar")
+
+    def test_structure_review_candidates_default_to_keep_when_ai_is_not_confident_enough(self) -> None:
+        black_mask_clean = np.zeros((80, 80), dtype=np.uint8)
+        drawing = Image.new("L", (80, 80), 0)
+        draw = ImageDraw.Draw(drawing)
+        draw.rectangle((26, 26, 40, 40), outline=255, width=1)
+        black_mask_clean = np.maximum(black_mask_clean, np.array(drawing, dtype=np.uint8))
+
+        filter_result = filter_structure_components(
+            black_mask_clean,
+            ComponentFilterSettings(),
+            classifier=_FakeLowConfidenceAnnotationClassifier(),
+        )
+
+        self.assertGreater(int(np.count_nonzero(filter_result.structure_mask)), 0)
+        self.assertEqual(int(np.count_nonzero(filter_result.rejected_symbol_mask)), 0)
+        self.assertEqual(len(filter_result.candidate_crops), 1)
+        self.assertEqual(filter_result.candidate_crops[0].candidate_kind, "structure_review")
+        self.assertEqual(filter_result.candidate_crops[0].default_decision, "keep")
+        self.assertEqual(filter_result.candidate_crops[0].final_decision, "keep")
+        self.assertEqual(filter_result.candidate_crops[0].decision_source, "heuristic")
+
+    def test_extract_architecture_geometry_keeps_door_like_curve(self) -> None:
+        black_mask_clean = np.zeros((96, 96), dtype=np.uint8)
+        drawing = Image.new("L", (96, 96), 0)
+        draw = ImageDraw.Draw(drawing)
+        draw.line((48, 24, 48, 52), fill=255, width=1)
+        draw.arc((20, 24, 48, 52), start=270, end=360, fill=255, width=1)
+        black_mask_clean = np.maximum(black_mask_clean, np.array(drawing, dtype=np.uint8))
+
+        geometry = extract_architecture_geometry(
+            black_mask_clean,
+            ArchitectureExtractionSettings(),
+        )
+
+        self.assertGreater(len(geometry.curved_paths), 0)
+
+    def test_load_labeled_dataset_skips_empty_class_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dataset_path = Path(temp_dir)
+            empty_class = dataset_path / "structure_door"
+            filled_class = dataset_path / "annotation_room_label"
+            empty_class.mkdir()
+            filled_class.mkdir()
+
+            sample = Image.new("L", (24, 24), 0)
+            draw = ImageDraw.Draw(sample)
+            draw.text((4, 6), "2", fill=255)
+            sample.save(filled_class / "sample.png")
+
+            features, labels, class_names = load_labeled_dataset(str(dataset_path), input_size=32)
+
+            self.assertEqual(features.shape[0], 1)
+            self.assertEqual(labels.tolist(), [0])
+            self.assertEqual(class_names, ("annotation_room_label",))
 
     def test_normalize_candidate_crop_returns_expected_shape(self) -> None:
         candidate_mask = np.zeros((24, 40), dtype=np.uint8)

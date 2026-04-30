@@ -17,9 +17,12 @@ class ArchitectureExtractionSettings:
     """Config for architecture-only geometry extraction."""
 
     min_line_length: float = 18.0
-    min_curve_area: int = 25
+    min_curve_component_pixels: int = 10
     min_curve_perimeter: float = 18.0
-    max_curve_area: int = 5000
+    max_curve_component_pixels: int = 5000
+    min_curve_bbox_dimension: int = 8
+    max_curve_aspect_ratio: float = 5.0
+    max_curve_fill_ratio: float = 0.58
     contour_approximation_ratio: float = 0.015
 
 
@@ -59,14 +62,43 @@ def _extract_curved_paths(
     settings: ArchitectureExtractionSettings,
 ) -> list[Polyline]:
     """Keep contour-like curved paths that may correspond to door swings."""
-    contours, _ = cv2.findContours(black_mask_clean, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        black_mask_clean,
+        connectivity=8,
+    )
     curved_paths = []
 
-    for contour in contours:
-        area = float(cv2.contourArea(contour))
-        perimeter = float(cv2.arcLength(contour, closed=True))
-        if area < settings.min_curve_area or area > settings.max_curve_area:
+    for label_index in range(1, component_count):
+        component_pixels = int(stats[label_index, cv2.CC_STAT_AREA])
+        if component_pixels < settings.min_curve_component_pixels:
             continue
+        if component_pixels > settings.max_curve_component_pixels:
+            continue
+
+        x = int(stats[label_index, cv2.CC_STAT_LEFT])
+        y = int(stats[label_index, cv2.CC_STAT_TOP])
+        width = int(stats[label_index, cv2.CC_STAT_WIDTH])
+        height = int(stats[label_index, cv2.CC_STAT_HEIGHT])
+        max_dimension = max(width, height)
+        min_dimension = max(1, min(width, height))
+        if max_dimension < settings.min_curve_bbox_dimension:
+            continue
+
+        aspect_ratio = max_dimension / float(min_dimension)
+        if aspect_ratio > settings.max_curve_aspect_ratio:
+            continue
+
+        fill_ratio = component_pixels / max(1.0, float(width * height))
+        if fill_ratio > settings.max_curve_fill_ratio:
+            continue
+
+        component_mask = np.where(labels == label_index, 255, 0).astype(np.uint8)
+        contours, _ = cv2.findContours(component_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            continue
+
+        contour = max(contours, key=lambda curve: cv2.arcLength(curve, closed=True))
+        perimeter = float(cv2.arcLength(contour, closed=True))
         if perimeter < settings.min_curve_perimeter:
             continue
 
@@ -76,14 +108,37 @@ def _extract_curved_paths(
         if len(points) < 4:
             continue
 
-        x, y, width, height = cv2.boundingRect(contour)
-        aspect_ratio = max(width, height) / max(1.0, float(min(width, height)))
-        fill_ratio = area / max(1.0, float(width * height))
+        if not _looks_curve_like(points, aspect_ratio, fill_ratio):
+            continue
 
-        if 0.15 <= fill_ratio <= 0.7 and aspect_ratio <= 4.5:
-            curved_paths.append(Polyline(points=points))
+        curved_paths.append(Polyline(points=points))
 
     return _deduplicate_polylines(curved_paths)
+
+
+def _looks_curve_like(
+    points: tuple[tuple[int, int], ...],
+    aspect_ratio: float,
+    fill_ratio: float,
+) -> bool:
+    """Reject boxy contour loops while keeping arc-like and mixed door shapes."""
+    diagonal_segments = 0
+    for left_point, right_point in zip(points, points[1:]):
+        dx = right_point[0] - left_point[0]
+        dy = right_point[1] - left_point[1]
+        if dx == 0 and dy == 0:
+            continue
+
+        if abs(dx) > 1 and abs(dy) > 1:
+            diagonal_segments += 1
+
+    if diagonal_segments >= 1:
+        return True
+
+    if len(points) >= 6 and aspect_ratio <= 3.6 and fill_ratio <= 0.42:
+        return True
+
+    return False
 
 
 def _deduplicate_polylines(polylines: list[Polyline]) -> list[Polyline]:

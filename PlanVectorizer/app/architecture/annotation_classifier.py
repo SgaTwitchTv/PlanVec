@@ -224,9 +224,10 @@ def load_labeled_dataset(dataset_dir: str, input_size: int = 32) -> tuple[np.nda
 
     features = []
     labels = []
-    class_names = tuple(directory.name for directory in class_directories)
+    class_names: list[str] = []
 
-    for class_index, class_directory in enumerate(class_directories):
+    for class_directory in class_directories:
+        class_features = []
         for image_path in sorted(class_directory.iterdir()):
             if not image_path.is_file():
                 continue
@@ -237,7 +238,15 @@ def load_labeled_dataset(dataset_dir: str, input_size: int = 32) -> tuple[np.nda
 
             _, binary_image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
             feature_vector = normalize_candidate_crop(binary_image, input_size)
-            features.append(feature_vector[0])
+            class_features.append(feature_vector[0])
+
+        if not class_features:
+            continue
+
+        class_index = len(class_names)
+        class_names.append(class_directory.name)
+        for feature_vector in class_features:
+            features.append(feature_vector)
             labels.append(class_index)
 
     if not features:
@@ -246,7 +255,7 @@ def load_labeled_dataset(dataset_dir: str, input_size: int = 32) -> tuple[np.nda
     return (
         np.asarray(features, dtype=np.float32),
         np.asarray(labels, dtype=np.int64),
-        class_names,
+        tuple(class_names),
     )
 
 

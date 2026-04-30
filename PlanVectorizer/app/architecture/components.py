@@ -39,9 +39,18 @@ class ComponentFilterSettings:
     callout_min_vertices: int = 6
     callout_max_rectangularity: float = 0.72
     annotation_cluster_gap: int = 14
+    structure_cluster_gap: int = 12
     candidate_padding: int = 6
     classifier_confidence_threshold: float = 0.72
+    structure_review_reject_threshold: float = 0.9
     classifier_max_crop_dimension: int = 96
+    structure_candidate_max_area: int = 2600
+    structure_candidate_max_dimension: int = 96
+    structure_candidate_min_perimeter: float = 20.0
+    door_candidate_min_dimension: int = 12
+    door_candidate_max_aspect_ratio: float = 3.4
+    door_candidate_min_perimeter: float = 24.0
+    door_candidate_max_fill_ratio: float = 0.42
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,10 @@ class CandidateCrop:
     image: np.ndarray
     predicted_label: str = "heuristic_annotation_cluster"
     confidence: float = 0.0
+    candidate_kind: str = "annotation_review"
+    default_decision: str = "reject"
+    final_decision: str = "reject"
+    decision_source: str = "heuristic"
 
 
 @dataclass(frozen=True)
@@ -113,14 +126,22 @@ def filter_structure_components(
 
     kept_labels: set[int] = set()
     annotation_candidates: list[ComponentDescriptor] = []
+    structure_review_candidates: list[ComponentDescriptor] = []
 
     for descriptor in descriptors:
         if _is_structural_component(descriptor, settings):
-            kept_labels.add(descriptor.label_index)
+            if _is_structure_review_candidate(descriptor, settings):
+                structure_review_candidates.append(descriptor)
+            else:
+                kept_labels.add(descriptor.label_index)
             continue
 
         if _is_annotation_candidate(descriptor, settings):
             annotation_candidates.append(descriptor)
+            continue
+
+        if _is_structure_review_candidate(descriptor, settings):
+            structure_review_candidates.append(descriptor)
             continue
 
         # Keep ambiguous larger components for now to avoid removing true structure.
@@ -128,35 +149,36 @@ def filter_structure_components(
 
     rejected_labels: set[int] = set()
     candidate_crops = []
-    candidate_clusters = _cluster_annotation_labels(annotation_candidates, settings)
+    next_cluster_id = 1
 
-    for cluster_id, cluster_labels in enumerate(candidate_clusters, start=1):
-        cluster_descriptors = [descriptors_by_label[label_index] for label_index in cluster_labels]
-        cluster_crop = _extract_cluster_crop(black_mask_clean, cluster_descriptors, settings)
-        cluster_prediction = _predict_annotation_cluster(
-            cluster_crop["image"],
-            classifier,
-            settings,
-        )
-
-        candidate_crops.append(
-            CandidateCrop(
-                cluster_id=cluster_id,
-                x=cluster_crop["x"],
-                y=cluster_crop["y"],
-                width=cluster_crop["width"],
-                height=cluster_crop["height"],
-                member_count=len(cluster_labels),
-                image=cluster_crop["image"],
-                predicted_label=cluster_prediction.label,
-                confidence=cluster_prediction.confidence,
-            )
-        )
-
-        if cluster_prediction.label.startswith("structure_"):
-            kept_labels.update(cluster_labels)
-        else:
-            rejected_labels.update(cluster_labels)
+    next_cluster_id = _process_candidate_groups(
+        black_mask_clean=black_mask_clean,
+        descriptors_by_label=descriptors_by_label,
+        candidates=annotation_candidates,
+        cluster_gap=settings.annotation_cluster_gap,
+        candidate_kind="annotation_review",
+        default_decision="reject",
+        classifier=classifier,
+        settings=settings,
+        kept_labels=kept_labels,
+        rejected_labels=rejected_labels,
+        candidate_crops=candidate_crops,
+        starting_cluster_id=next_cluster_id,
+    )
+    _process_candidate_groups(
+        black_mask_clean=black_mask_clean,
+        descriptors_by_label=descriptors_by_label,
+        candidates=structure_review_candidates,
+        cluster_gap=settings.structure_cluster_gap,
+        candidate_kind="structure_review",
+        default_decision="keep",
+        classifier=classifier,
+        settings=settings,
+        kept_labels=kept_labels,
+        rejected_labels=rejected_labels,
+        candidate_crops=candidate_crops,
+        starting_cluster_id=next_cluster_id,
+    )
 
     structure_mask = np.zeros_like(black_mask_clean)
     rejected_symbol_mask = np.zeros_like(black_mask_clean)
@@ -300,6 +322,47 @@ def _is_annotation_candidate(
     return False
 
 
+def _is_structure_review_candidate(
+    descriptor: ComponentDescriptor,
+    settings: ComponentFilterSettings,
+) -> bool:
+    """Return True when a small structural-looking component is worth sending to AI."""
+    if descriptor.area > settings.structure_candidate_max_area:
+        return False
+
+    if descriptor.max_dimension > settings.structure_candidate_max_dimension:
+        return False
+
+    if descriptor.perimeter < settings.structure_candidate_min_perimeter:
+        return False
+
+    if _is_rectangular_pillar(descriptor, settings) or _is_circular_pillar(descriptor, settings):
+        return True
+
+    if _is_door_like_candidate(descriptor, settings):
+        return True
+
+    return (
+        descriptor.fill_ratio <= 0.55
+        and descriptor.aspect_ratio <= 4.5
+        and descriptor.min_dimension >= 3
+    )
+
+
+def _is_door_like_candidate(
+    descriptor: ComponentDescriptor,
+    settings: ComponentFilterSettings,
+) -> bool:
+    """Identify small arc/jamb-like structural fragments that often get confused with noise."""
+    return (
+        descriptor.max_dimension >= settings.door_candidate_min_dimension
+        and descriptor.aspect_ratio <= settings.door_candidate_max_aspect_ratio
+        and descriptor.perimeter >= settings.door_candidate_min_perimeter
+        and descriptor.fill_ratio <= settings.door_candidate_max_fill_ratio
+        and descriptor.approx_vertices >= 4
+    )
+
+
 def _is_small_callout_circle(
     descriptor: ComponentDescriptor,
     settings: ComponentFilterSettings,
@@ -314,11 +377,11 @@ def _is_small_callout_circle(
     )
 
 
-def _cluster_annotation_labels(
+def _cluster_candidate_labels(
     candidates: list[ComponentDescriptor],
-    settings: ComponentFilterSettings,
+    gap: int,
 ) -> list[tuple[int, ...]]:
-    """Group nearby annotation candidates into label clusters."""
+    """Group nearby candidate components into review clusters."""
     if not candidates:
         return []
 
@@ -340,7 +403,7 @@ def _cluster_annotation_labels(
 
     for index, left in enumerate(candidates):
         for right in candidates[index + 1 :]:
-            if _components_are_close(left, right, settings.annotation_cluster_gap):
+            if _components_are_close(left, right, gap):
                 union(left.label_index, right.label_index)
 
     clusters: dict[int, list[int]] = {}
@@ -349,6 +412,88 @@ def _cluster_annotation_labels(
         clusters.setdefault(root, []).append(descriptor.label_index)
 
     return [tuple(sorted(label_indices)) for label_indices in clusters.values()]
+
+
+def _process_candidate_groups(
+    black_mask_clean: np.ndarray,
+    descriptors_by_label: dict[int, ComponentDescriptor],
+    candidates: list[ComponentDescriptor],
+    cluster_gap: int,
+    candidate_kind: str,
+    default_decision: str,
+    classifier: Optional[AnnotationCandidateClassifier],
+    settings: ComponentFilterSettings,
+    kept_labels: set[int],
+    rejected_labels: set[int],
+    candidate_crops: list[CandidateCrop],
+    starting_cluster_id: int,
+) -> int:
+    """Evaluate grouped AI review candidates and apply keep/reject decisions."""
+    cluster_id = starting_cluster_id
+    candidate_clusters = _cluster_candidate_labels(candidates, cluster_gap)
+
+    for cluster_labels in candidate_clusters:
+        cluster_descriptors = [descriptors_by_label[label_index] for label_index in cluster_labels]
+        cluster_crop = _extract_cluster_crop(black_mask_clean, cluster_descriptors, settings)
+        cluster_prediction = _predict_annotation_cluster(
+            cluster_crop["image"],
+            classifier,
+            settings,
+        )
+        final_decision, decision_source = _resolve_cluster_decision(
+            prediction=cluster_prediction,
+            default_decision=default_decision,
+            candidate_kind=candidate_kind,
+            settings=settings,
+        )
+
+        candidate_crops.append(
+            CandidateCrop(
+                cluster_id=cluster_id,
+                x=cluster_crop["x"],
+                y=cluster_crop["y"],
+                width=cluster_crop["width"],
+                height=cluster_crop["height"],
+                member_count=len(cluster_labels),
+                image=cluster_crop["image"],
+                predicted_label=cluster_prediction.label,
+                confidence=cluster_prediction.confidence,
+                candidate_kind=candidate_kind,
+                default_decision=default_decision,
+                final_decision=final_decision,
+                decision_source=decision_source,
+            )
+        )
+
+        if final_decision == "keep":
+            kept_labels.update(cluster_labels)
+        else:
+            rejected_labels.update(cluster_labels)
+
+        cluster_id += 1
+
+    return cluster_id
+
+
+def _resolve_cluster_decision(
+    prediction: AnnotationPrediction,
+    default_decision: str,
+    candidate_kind: str,
+    settings: ComponentFilterSettings,
+) -> tuple[str, str]:
+    """Blend AI predictions with safe default behavior for each candidate family."""
+    if prediction.label.startswith("structure_"):
+        return "keep", "classifier"
+
+    if prediction.label.startswith("annotation_"):
+        if (
+            candidate_kind == "structure_review"
+            and prediction.confidence < settings.structure_review_reject_threshold
+        ):
+            return default_decision, "heuristic"
+        return "reject", "classifier"
+
+    return default_decision, "heuristic"
 
 
 def _components_are_close(
